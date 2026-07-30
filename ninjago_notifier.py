@@ -12,6 +12,8 @@ souhrnná notifikace místo zahlcení víc oznámeními.
 import json
 import os
 import sys
+import time
+import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 
@@ -33,10 +35,28 @@ NS = {
 }
 
 
-def fetch_feed(url: str) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        return resp.read()
+FEED_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+
+def fetch_feed(url: str, retries: int = 3, backoff_seconds: float = 8.0) -> bytes:
+    # YouTube feed endpoint občas vrací přechodné 404 i pro platné kanály -
+    # jde o dobře známý, dlouhodobě hlášený jev, ne chybu v URL/ID. Pár pokusů
+    # s malou pauzou to ve většině případů vyřeší.
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": FEED_UA})
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                return resp.read()
+        except (urllib.error.HTTPError, urllib.error.URLError) as e:
+            last_error = e
+            print(f"Pokus {attempt}/{retries} o stažení feedu selhal ({e}).", file=sys.stderr)
+            if attempt < retries:
+                time.sleep(backoff_seconds)
+    raise last_error
 
 
 def parse_entries(xml_bytes: bytes):
@@ -122,7 +142,16 @@ def main() -> None:
     seen = load_seen(STATE_FILE)
     seen_set = set(seen)
 
-    xml_bytes = fetch_feed(FEED_URL)
+    try:
+        xml_bytes = fetch_feed(FEED_URL)
+    except Exception as e:
+        # Feed se nepodařilo stáhnout ani po opakovaných pokusech - typicky
+        # přechodný výpadek na straně YouTube. Skript skončí v klidu a příští
+        # naplánovaný běh (za pár minut) to zkusí znovu, žádná notifikace se
+        # tím neztratí.
+        print(f"Feed se nepodařilo stáhnout ani po opakovaných pokusech ({e}). Zkusím to příští běh.", file=sys.stderr)
+        return
+
     entries = parse_entries(xml_bytes)
 
     if first_run:
