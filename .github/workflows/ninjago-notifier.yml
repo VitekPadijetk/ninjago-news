@@ -32,3 +32,4 @@ jobs:
           git add seen_videos.json
           git diff --staged --quiet || git commit -m "Aktualizace stavu sledovaných videí"
           git push
+          
